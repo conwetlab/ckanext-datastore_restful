@@ -21,10 +21,6 @@ class RestfulDataStorePlugin(plugins.SingletonPlugin):
         m.connect('/resource/{resource_id}',
                   controller='ckanext.datastore_restful.controller:RestfulDatastoreController',
                   action='delete_resource', conditions=DELETE)
-        #Dump a resource
-        m.connect('/resource/{resource_id}/dump',
-                  controller='ckanext.datastore.controller:DatastoreController',
-                  action='dump', conditions=GET)
 
         #Get the entire collection of entries
         m.connect('/resource/{resource_id}/entry',
