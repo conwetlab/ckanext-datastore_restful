@@ -1,3 +1,4 @@
+import cgi
 import logging
 import types
 
@@ -73,10 +74,16 @@ class RestfulDatastoreController(base.BaseController):
                                    method
                  e.g. return self._finish(404, 'Package not found')
         '''
-        # TODO: Return different formats (at least XML)
         assert(isinstance(status_int, int))
         response.status_int = status_int
         response.headers['Content-Type'] = CONTENT_TYPES[content_type]
+        
+        # Support "JSONP" callback
+        if content_type == JSON and status_int == 200 and '$callback' in request.params and \
+                request.method == 'GET':
+                callback = cgi.escape(request.params['$callback'])
+                response_data = self._wrap_jsonp(callback, response_data)
+
         return response_data
 
     def _parse_and_finish(self, status_int, response_data, content_type=JSON):
@@ -166,7 +173,6 @@ class RestfulDatastoreController(base.BaseController):
             else:
                 response_msg = helpers.json.dumps(element)
         elif content_type == XML:
-            log.warn('IS INSTANCE ' + type(element).__name__)
             response_msg = response_parser.xml_parser(element, field_xml_name)
         elif content_type == CSV:
             response_msg = response_parser.csv_parser(data)
@@ -343,7 +349,7 @@ class RestfulDatastoreController(base.BaseController):
 
         def get_parameters():
             PARAMETERS_TO_TRANSFORM = ['q', 'plain', 'language', 'limit', 'offset', 'fields', 'sort']
-            DEFAULT_PARAMETERS = ['resource_id', 'filters'] + PARAMETERS_TO_TRANSFORM
+            DEFAULT_PARAMETERS = ['resource_id', 'filters', '$callback'] + PARAMETERS_TO_TRANSFORM
 
             request_data = request.GET.mixed()
 
