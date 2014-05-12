@@ -20,9 +20,6 @@ def csv_parser(result):
 def xml_parser(result, root):
 
     # Obtained from https://gist.github.com/reimund/5435343/ and modified to fulfill our needs
-    # WARN: unsafe against XML special charaters in input
-    # WARN: This function need to be test
-
     def xml_escape(s):
         if type(s) in (str, unicode):
             s = s.replace('&', '&amp;')
@@ -43,7 +40,7 @@ def xml_parser(result, root):
 
     def dict2xml(d, root_node=None, start=False):
         wrap = False if None == root_node or (isinstance(d, list) and not start) else True
-        root = 'records' if None == root_node else root_node
+        root = 'rows' if None == root_node or not key_is_valid_xml(root_node) else root_node
         root_singular = root[:-1] if 's' == root[-1] else root
         xml = ''
         children = []
@@ -55,7 +52,7 @@ def xml_parser(result, root):
                 elif isinstance(value, list):
                     children.append(dict2xml(value, key))
                 if key.startswith('__'):
-                    xml = xml + ' ' + key + '="' + xml_escape(unicode(value)) + '"'
+                    xml = xml + ' ' + key[2:] + '="' + xml_escape(unicode(value)) + '"'
                 else:
                     children.append(dict2xml(value, key))
         elif isinstance(d, list):

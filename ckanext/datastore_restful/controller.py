@@ -1,6 +1,7 @@
 import cgi
 import logging
-import types
+import re
+import operator
 
 import ckan.plugins as plugins
 import ckan.lib.base as base
@@ -8,7 +9,6 @@ import ckan.model as model
 import ckan.lib.helpers as helpers
 import ckan.lib.navl.dictization_functions as dictization_functions
 import ckan.lib.search as search
-import ckanext.datastore.db as db
 import ckanext.datastore_restful.response_parser as response_parser
 
 from ckan.common import _, request, response
@@ -29,44 +29,26 @@ CONTENT_TYPES = {
     CSV: 'text/csv;charset=utf-8'
 }
 
-CALLBACK_PARAMETER = 'callback'
 IDENTIFIER = 'pk'
 IDENTIFIER_POS = 0
 CKAN_IDENTIFIER = '_id'
 DEFAULT_ACCEPT = '*/*'
 
+CALLBACK_PARAMETER = 'callback'
+RESOURCE_ID = 'resource_id'
+RECORDS = 'records'
+
 
 class RestfulDatastoreController(base.BaseController):
 
     def __call__(self, environ, start_response):
-
-        # Override check_fields function avoiding checking the IDENTIFIER that is
-        # introduced in this code when a new resource is created
-        _old_check_types = types.FunctionType(
-            db.check_fields.func_code,
-            db.check_fields.func_globals,
-            name=db.check_fields.func_name,
-            argdefs=db.check_fields.func_defaults,
-            closure=db.check_fields.func_closure
-        )
-
-        def _new_check_fields(context, fields):
-            # The element IDENTIFIER_POS of the fields array is the identifier
-            # introduced (pk) to be able to access individual entries
-            identifier = fields.pop(IDENTIFIER_POS)
-            result = _old_check_types(context, fields)
-            fields.insert(IDENTIFIER_POS, identifier)
-            return result
-
-        db.check_fields = _new_check_fields
-
         # avoid status_code_redirect intercepting error responses
         environ['pylons.status_code_redirect'] = True
         return base.BaseController.__call__(self, environ, start_response)
 
-    #############################################################################################################################
-    ######################################################    FINISH    #########################################################
-    #############################################################################################################################
+    ###############################################################################################
+    ##########################################  FINISH  ###########################################
+    ###############################################################################################
 
     def _finish(self, status_int, response_data=None,
                 content_type='text'):
@@ -131,13 +113,21 @@ class RestfulDatastoreController(base.BaseController):
     def _finish_bad_request(self, extra_msg=None):
         return self._finish_error(400, _('Bad request'), extra_msg)
 
-
-    #############################################################################################################################
-    ######################################################    AUXILIAR    #######################################################
-    #############################################################################################################################
+    ###############################################################################################
+    #########################################  AUXILIAR  ##########################################
+    ###############################################################################################
 
     def _wrap_jsonp(self, callback, response_msg):
         return '%s(%s);' % (callback, response_msg)
+
+    def _set_response_header(self, name, value):
+        try:
+            value = str(value)
+        except Exception, inst:
+            msg = "Couldn't convert '%s' header value '%s' to string: %s" % \
+                (name, value, inst)
+            raise Exception(msg)
+        response.headers[name] = value
 
     def _get_context(self):
         return {
@@ -167,7 +157,10 @@ class RestfulDatastoreController(base.BaseController):
 
         # Maybe just a part of the data is intendeed to be returned
         if field:
-            element = element[field]
+            if field in element:
+                element = element[field]
+            else:
+                element = []
         
         # Maybe only just one element is intendeed to be returned
         if entry is not None:
@@ -181,41 +174,77 @@ class RestfulDatastoreController(base.BaseController):
             else:
                 response_msg = helpers.json.dumps(element)
         elif content_type == XML:
+            # Include URL as attribute of each record
+            if field == RECORDS and RESOURCE_ID in data:
+                for k in data[RECORDS]:
+                    k['__url'] = 'http://%s/%s/%s/%s/%s' % (request.headers['host'], 'resource', data[RESOURCE_ID], 'entry', k[IDENTIFIER])
+
             response_msg = response_parser.xml_parser(element, field_xml_name)
         elif content_type == CSV:
             response_msg = response_parser.csv_parser(data)
         
         return response_msg
 
+    def _entry_not_found(self, resource_id, entry_id):
+        return plugins.toolkit.ObjectNotFound(_('The element %s does not exist in the resource %s' % (entry_id, resource_id)))
+
     def _get_content_type(self, accepted_headers):
+
+        def _get_quality(accept_entry):
+            quality = float(1)
+            
+            if len(accept_entry) > 1:
+                regex_result = re.findall('q\=(\d*\.?\d*)$', accept_entry[1])
+                if regex_result:
+                    quality = float(regex_result[0])
+
+            return quality
         
-        accepts = request.headers['ACCEPT'].split(',')
-        header = None
+        accept_header = request.headers['ACCEPT']
+        accepts = accept_header.split(',')
+        valid_accepts = {}
+        content_type = None
 
-        # Get content_type (Maybe this code must be refactored)
-        # TODO: Analize q(uality)
         for accept in accepts:
-            for key in accepted_headers:
-                if accept in CONTENT_TYPES[key]:    # Header has been found. Search can be stopped
-                    header = key
-                    break
-            if header:
-                break
+            accept_entry = accept.split(';')
+            accept_type = accept_entry[0].strip().lower()
 
-        if not header:
-            if DEFAULT_ACCEPT in accepts[0]:        # Accept */*
-                header = JSON
+            # Accept */*. JSON is tried to be returned by default
+            if DEFAULT_ACCEPT in accept_type:
+                if not JSON in valid_accepts:
+                    valid_accepts[JSON] = _get_quality(accept_entry)
             else:
-                raise plugins.toolkit.ValidationError(_('The \'Accept\' header is invalid. \'%s\' is not admitted' % accept))
+                for key in accepted_headers:
+                    # Ex: "application/json" in "application/json; chatset=..."
+                    if key in CONTENT_TYPES and accept_type in CONTENT_TYPES[key]:
+                        valid_accepts[key] = _get_quality(accept_entry)
+                        break
 
-        return header
+        if len(valid_accepts) > 0:
+            max_quality = max(valid_accepts.iteritems(), key=operator.itemgetter(1))  # 0: key, 1: value
+
+            # It's necessary to check if the highest quality is the same than the one of JSON
+            # In that case, JSON will be returned
+            if JSON in valid_accepts and max_quality[1] == valid_accepts[JSON]:
+                content_type = JSON
+            else:
+                content_type = max_quality[0]
+
+        if not content_type:
+            allowed_accepts = ', '.join(CONTENT_TYPES[k].split(';')[0] for k in accepted_headers if k in CONTENT_TYPES)
+            raise plugins.toolkit.ValidationError({
+                'data': { 'Accept': accept_header },
+                'message': 'Only %s can be placed in the \'Accept\' header for this request' % allowed_accepts
+            })
+
+        return content_type
 
     def _execute_logic_function(self, logic_function, get_parameters, response_parser, accepted_formats=[JSON, XML]):
 
         def _remove_identifier(result):
             copy = result.copy()
-            if 'records' in copy:
-                for record in copy['records']:
+            if RECORDS in copy:
+                for record in copy[RECORDS]:
                     if '_id' in record:
                         del record['_id']
             return copy
@@ -239,11 +268,10 @@ class RestfulDatastoreController(base.BaseController):
             return_dict['error'] = {'__type': 'Integrity Error',
                                     'message': e.error,
                                     'data': request_data}
-            return_dict['success'] = False
-            return self._finish(400, return_dict, content_type='json')
+            return self._parse_and_finish(400, return_dict, content_type='json')
         
         except plugins.toolkit.NotAuthorized as e:
-            return self._finish_not_a(e.extra_msg)
+            return self._finish_not_authz(e.extra_msg)
         
         except plugins.toolkit.ObjectNotFound as e:
             return self._finish_not_found(e.extra_msg)
@@ -273,13 +301,14 @@ class RestfulDatastoreController(base.BaseController):
             return self._parse_and_finish(500, return_dict)
 
         except Exception as e:
-            log.warn('Unexpected exception %s', str(e))
+            log.exception('Unexpected exception')
+            return_dict['error'] = {'__type': 'Unexpected Error',
+                    'message': '%s: %s' % (type(e).__name__, str(e)) }
+            return self._parse_and_finish(500, return_dict)
 
-
-
-    #############################################################################################################################
-    ######################################################    RESOURCES    ######################################################
-    #############################################################################################################################
+    ###############################################################################################
+    ########################################  RESOURCES  ##########################################
+    ###############################################################################################
 
     def upsert_resource(self, resource_id):
 
@@ -288,17 +317,18 @@ class RestfulDatastoreController(base.BaseController):
             request_data = {}
             request_data['fields'] = self._parse_body()
             request_data['force'] = True
-            request_data['resource_id'] = resource_id
+            request_data[RESOURCE_ID] = resource_id
 
             for field in request_data['fields']:
                 if field['id'] == IDENTIFIER:
                     raise plugins.toolkit.ValidationError(_('The field \'%s\' cannot be used since it\'s used internally' % IDENTIFIER))
 
-            # Ignore primary_key field. The primary key is automatically set by us
-            request_data['primary_key'] = [IDENTIFIER]
+            if isinstance(request_data['fields'], list):
+                # Add the '#id' field in the fields parameter
+                request_data['fields'].insert(IDENTIFIER_POS, {'type': 'int', 'id': IDENTIFIER})
 
-            # Add the '#id' field in the fields parameter
-            request_data['fields'].insert(IDENTIFIER_POS, {'type': 'serial', 'id': IDENTIFIER})
+                # Ignore primary_key field. The primary key is automatically set by us
+                request_data['primary_key'] = [IDENTIFIER]
 
             return request_data
 
@@ -311,7 +341,7 @@ class RestfulDatastoreController(base.BaseController):
 
         def get_parameters():
             request_data = {}
-            request_data['resource_id'] = resource_id
+            request_data[RESOURCE_ID] = resource_id
             return request_data
 
         def response_parser(result, content_type):
@@ -331,7 +361,7 @@ class RestfulDatastoreController(base.BaseController):
 
         def get_parameters():
             request_data = self._parse_get_parameters()
-            request_data['resource_id'] = resource_id
+            request_data[RESOURCE_ID] = resource_id
             request_data['force'] = True
 
             # If the filters parameter is set, the resource won't be deleted. Only the elements that
@@ -346,21 +376,20 @@ class RestfulDatastoreController(base.BaseController):
 
         return self._execute_logic_function('datastore_delete', get_parameters, response_parser)
 
-
-    #############################################################################################################################
-    ######################################################    ENTRIES    ########################################################
-    #############################################################################################################################
+    ###############################################################################################
+    #########################################  ENTRIES  ###########################################
+    ###############################################################################################
 
     def search_entries(self, resource_id):
 
         def get_parameters():
             PARAMETERS_TO_TRANSFORM = ['q', 'plain', 'language', 'limit', 'offset', 'fields', 'sort']
-            DEFAULT_PARAMETERS = ['resource_id', 'filters'] + PARAMETERS_TO_TRANSFORM
+            DEFAULT_PARAMETERS = [RESOURCE_ID, 'filters'] + PARAMETERS_TO_TRANSFORM
 
             request_data = self._parse_get_parameters()
 
             #Append resource_id
-            request_data['resource_id'] = resource_id
+            request_data[RESOURCE_ID] = resource_id
 
             #Convert from '$parameter' to 'parameter' (ex: '$offset' -> 'offset')
             for parameter in PARAMETERS_TO_TRANSFORM:
@@ -383,13 +412,7 @@ class RestfulDatastoreController(base.BaseController):
             return request_data
 
         def response_parser(result, content_type):
-            # TODO: Include URL in the XML
-            # for k in result['records']:
-            #    k['_url'] = 'http://example.com'
-            
-            #return result['records']
-            # Include URL
-            return self._parse_response(result, content_type, 'records')
+            return self._parse_response(result, content_type, RECORDS)
 
         return self._execute_logic_function('datastore_search', get_parameters, response_parser, [XML, JSON, CSV])
         
@@ -398,8 +421,8 @@ class RestfulDatastoreController(base.BaseController):
         def get_parameters():
 
             request_data = {}
-            request_data['records'] = self._parse_body()
-            request_data['resource_id'] = resource_id
+            request_data[RECORDS] = self._parse_body()
+            request_data[RESOURCE_ID] = resource_id
             request_data['method'] = 'upsert'
             request_data['force'] = True
 
@@ -408,14 +431,14 @@ class RestfulDatastoreController(base.BaseController):
             function = plugins.toolkit.get_action('datastore_search_sql')
             own_req = {}
             own_req['sql'] = 'SELECT MAX(pk) AS %s FROM \"%s\";' % (MAX_NAME, resource_id)
-            max_id = function(self._get_context(), own_req)['records'][0][MAX_NAME]
+            max_id = function(self._get_context(), own_req)[RECORDS][0][MAX_NAME]
 
             if not max_id:
                 max_id = 0
 
             #Asign pk to each record
-            #The value specified by the user in the ID will be overwritten with our value
-            for record in request_data['records']:
+            #The value specified by the user in the ID will be overwritten by our value
+            for record in request_data[RECORDS]:
                 if IDENTIFIER in record:
                     raise plugins.toolkit.ValidationError(_('The field \'%s\' is asigned automatically' % IDENTIFIER))
                 else:
@@ -425,7 +448,7 @@ class RestfulDatastoreController(base.BaseController):
             return request_data
 
         def response_parser(result, content_type):
-            return self._parse_response(result, content_type, 'records')
+            return self._parse_response(result, content_type, RECORDS)
 
         return self._execute_logic_function('datastore_upsert', get_parameters, response_parser)
 
@@ -434,27 +457,30 @@ class RestfulDatastoreController(base.BaseController):
         def get_parameters():
 
             request_data = {}
-            request_data['records'] = self._parse_body()
-            request_data['resource_id'] = resource_id
+            request_data[RECORDS] = self._parse_body()
+            request_data[RESOURCE_ID] = resource_id
             request_data['method'] = 'upsert'
             request_data['force'] = True
 
-            if isinstance(request_data['records'], dict):
-                request_data['records'] = [request_data['records']]
+            if isinstance(request_data[RECORDS], dict):
+                request_data[RECORDS] = [request_data[RECORDS]]
             else:
-                raise ValueError(_('Only a single object can be inserted by request'))
+                raise plugins.toolkit.ValidationError(_('Only a single object can be inserted by request'))
 
             # The entry identifier cannot be changed
-            if IDENTIFIER in request_data['records'][0] and request_data['records'][0][IDENTIFIER] != int(entry_id):
-                raise ValueError(_('The entry identifier cannot be changed'))
+            if IDENTIFIER in request_data[RECORDS][0] and request_data[RECORDS][0][IDENTIFIER] != int(entry_id):
+                raise plugins.toolkit.ValidationError(_('The entry identifier cannot be changed'))
 
             # Set entry identifier based on the URI
-            request_data['records'][0][IDENTIFIER] = int(entry_id)
+            if len(request_data[RECORDS][0]) > 0:
+                request_data[RECORDS][0][IDENTIFIER] = int(entry_id)
+            else:
+                raise plugins.toolkit.ValidationError(_('Empty object received'))   # Check this error
 
             return request_data
 
         def response_parser(result, content_type):
-            return self._parse_response(result, content_type, 'records', 0)
+            return self._parse_response(result, content_type, RECORDS, 0)
 
         return self._execute_logic_function('datastore_upsert', get_parameters, response_parser)
 
@@ -464,15 +490,15 @@ class RestfulDatastoreController(base.BaseController):
             request_data = {}
             request_data['filters'] = {}
             request_data['filters'][IDENTIFIER] = entry_id
-            request_data['resource_id'] = resource_id
+            request_data[RESOURCE_ID] = resource_id
 
             return request_data
 
         def response_parser(result, content_type):
-            if len(result['records']) != 1:
-                raise plugins.toolkit.ObjectNotFound(_('The element %s does not exist in the resource %s' % (entry_id, resource_id)))
+            if len(result[RECORDS]) != 1:
+                raise self._entry_not_found(resource_id, entry_id)
 
-            return self._parse_response(result, content_type, 'records', 0)
+            return self._parse_response(result, content_type, RECORDS, 0)
 
         return self._execute_logic_function('datastore_search', get_parameters, response_parser)
 
@@ -482,8 +508,18 @@ class RestfulDatastoreController(base.BaseController):
             request_data = {}
             request_data['filters'] = {}
             request_data['filters'][IDENTIFIER] = entry_id
-            request_data['resource_id'] = resource_id
+            request_data[RESOURCE_ID] = resource_id
             request_data['force'] = True
+
+            # Does the entry exist?
+            function = plugins.toolkit.get_action('datastore_search')
+            own_req = {}
+            own_req['filters'] = {IDENTIFIER: entry_id}
+            own_req[RESOURCE_ID] = resource_id
+            result = function(self._get_context(), own_req)
+
+            if len(result[RECORDS]) != 1:
+                raise self._entry_not_found(resource_id, entry_id)
 
             return request_data
 
@@ -492,10 +528,9 @@ class RestfulDatastoreController(base.BaseController):
 
         return self._execute_logic_function('datastore_delete', get_parameters, response_parser)
 
-
-    #############################################################################################################################
-    #########################################################    SQL    #########################################################
-    #############################################################################################################################
+    ###############################################################################################
+    ############################################  SQL  ############################################
+    ###############################################################################################
 
     def sql(self):
 
@@ -503,7 +538,7 @@ class RestfulDatastoreController(base.BaseController):
             return self._parse_get_parameters()
 
         def response_parser(result, content_type):
-            return self._parse_response(result, content_type, 'records')
+            return self._parse_response(result, content_type, RECORDS)
 
         return self._execute_logic_function('datastore_search_sql', get_parameters, response_parser, [XML, JSON, CSV])
 
