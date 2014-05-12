@@ -38,7 +38,7 @@ def xml_parser(result, root):
         try:
             parseString(test_xml)
             return True
-        except Exception: #minidom does not implement exceptions well
+        except Exception:   # minidom does not implement exceptions well
             return False
 
     def dict2xml(d, root_node=None, start=False):
@@ -54,7 +54,7 @@ def xml_parser(result, root):
                     children.append(dict2xml(value, key))
                 elif isinstance(value, list):
                     children.append(dict2xml(value, key))
-                if key.startswith('_'):
+                if key.startswith('__'):
                     xml = xml + ' ' + key + '="' + xml_escape(unicode(value)) + '"'
                 else:
                     children.append(dict2xml(value, key))

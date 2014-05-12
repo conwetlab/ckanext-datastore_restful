@@ -29,6 +29,7 @@ CONTENT_TYPES = {
     CSV: 'text/csv;charset=utf-8'
 }
 
+CALLBACK_PARAMETER = 'callback'
 IDENTIFIER = 'pk'
 IDENTIFIER_POS = 0
 CKAN_IDENTIFIER = '_id'
@@ -39,8 +40,8 @@ class RestfulDatastoreController(base.BaseController):
 
     def __call__(self, environ, start_response):
 
-        # Override check_fields function avoiding checking the IDENTIFIER that is introduced in this code when a
-        # new resource is created
+        # Override check_fields function avoiding checking the IDENTIFIER that is
+        # introduced in this code when a new resource is created
         _old_check_types = types.FunctionType(
             db.check_fields.func_code,
             db.check_fields.func_globals,
@@ -50,10 +51,11 @@ class RestfulDatastoreController(base.BaseController):
         )
 
         def _new_check_fields(context, fields):
-            # The last element of fields array is the identifier introduced
-            last = fields.pop(IDENTIFIER_POS)
+            # The element IDENTIFIER_POS of the fields array is the identifier
+            # introduced (pk) to be able to access individual entries
+            identifier = fields.pop(IDENTIFIER_POS)
             result = _old_check_types(context, fields)
-            fields.insert(IDENTIFIER_POS, last)
+            fields.insert(IDENTIFIER_POS, identifier)
             return result
 
         db.check_fields = _new_check_fields
@@ -79,9 +81,9 @@ class RestfulDatastoreController(base.BaseController):
         response.headers['Content-Type'] = CONTENT_TYPES[content_type]
         
         # Support "JSONP" callback
-        if content_type == JSON and status_int == 200 and '$callback' in request.params and \
+        if content_type == JSON and status_int == 200 and CALLBACK_PARAMETER in request.params and \
                 request.method == 'GET':
-                callback = cgi.escape(request.params['$callback'])
+                callback = cgi.escape(request.params[CALLBACK_PARAMETER])
                 response_data = self._wrap_jsonp(callback, response_data)
 
         return response_data
@@ -144,6 +146,12 @@ class RestfulDatastoreController(base.BaseController):
             'user': plugins.toolkit.c.user
         }
 
+    def _parse_get_parameters(self):
+        get_parameters = request.GET.mixed()
+        if CALLBACK_PARAMETER in get_parameters:
+            del get_parameters[CALLBACK_PARAMETER]
+        return get_parameters
+
     def _parse_body(self):
         try:
             return helpers.json.loads(request.body, encoding='utf-8')
@@ -185,6 +193,7 @@ class RestfulDatastoreController(base.BaseController):
         header = None
 
         # Get content_type (Maybe this code must be refactored)
+        # TODO: Analize q(uality)
         for accept in accepts:
             for key in accepted_headers:
                 if accept in CONTENT_TYPES[key]:    # Header has been found. Search can be stopped
@@ -221,54 +230,51 @@ class RestfulDatastoreController(base.BaseController):
             result = function(context, request_data)                 # Execute the function
             result = _remove_identifier(result)                      # Remove _id from the results
             response_data = response_parser(result, content_type)    # Parse the results
+            return self._finish_ok(response_data, content_type)      # Return the response
             
-            return self._finish(200, response_data, content_type)
-        
-        except ValueError, e:
+        except ValueError as e:
             return self._finish_bad_request(e)
         
-        except dictization_functions.DataError, e:
+        except dictization_functions.DataError as e:
             return_dict['error'] = {'__type': 'Integrity Error',
                                     'message': e.error,
                                     'data': request_data}
             return_dict['success'] = False
             return self._finish(400, return_dict, content_type='json')
         
-        except plugins.toolkit.NotAuthorized, e:
+        except plugins.toolkit.NotAuthorized as e:
             return self._finish_not_a(e.extra_msg)
         
-        except plugins.toolkit.ObjectNotFound, e:
+        except plugins.toolkit.ObjectNotFound as e:
             return self._finish_not_found(e.extra_msg)
         
-        except plugins.toolkit.ValidationError, e:
+        except plugins.toolkit.ValidationError as e:
             error_dict = e.error_dict
             error_dict['__type'] = 'Validation Error'
             return_dict['error'] = error_dict
-
             # CS nasty_string ignore
             return self._parse_and_finish(409, return_dict)
         
-        except search.SearchQueryError, e:
+        except search.SearchQueryError as e:
             return_dict['error'] = {'__type': 'Search Query Error',
                                     'message': 'Search Query is invalid: %r' %
                                     e.args}
-
             return self._parse_and_finish(400, return_dict)
         
-        except search.SearchError, e:
+        except search.SearchError as e:
             return_dict['error'] = {'__type': 'Search Error',
                                     'message': 'Search error: %r' % e.args}
-
             return self._parse_and_finish(409, return_dict)
         
-        except search.SearchIndexError, e:
+        except search.SearchIndexError as e:
             return_dict['error'] = {'__type': 'Search Index Error',
                     'message': 'Unable to add package to search index: %s' %
                     str(e)}
-
             return self._parse_and_finish(500, return_dict)
 
-        return self._finish_ok(return_dict)
+        except Exception as e:
+            log.warn('Unexpected exception %s', str(e))
+
 
 
     #############################################################################################################################
@@ -324,7 +330,7 @@ class RestfulDatastoreController(base.BaseController):
     def delete_resource(self, resource_id):
 
         def get_parameters():
-            request_data = request.GET.mixed()
+            request_data = self._parse_get_parameters()
             request_data['resource_id'] = resource_id
             request_data['force'] = True
 
@@ -349,9 +355,9 @@ class RestfulDatastoreController(base.BaseController):
 
         def get_parameters():
             PARAMETERS_TO_TRANSFORM = ['q', 'plain', 'language', 'limit', 'offset', 'fields', 'sort']
-            DEFAULT_PARAMETERS = ['resource_id', 'filters', '$callback'] + PARAMETERS_TO_TRANSFORM
+            DEFAULT_PARAMETERS = ['resource_id', 'filters'] + PARAMETERS_TO_TRANSFORM
 
-            request_data = request.GET.mixed()
+            request_data = self._parse_get_parameters()
 
             #Append resource_id
             request_data['resource_id'] = resource_id
@@ -397,7 +403,7 @@ class RestfulDatastoreController(base.BaseController):
             request_data['method'] = 'upsert'
             request_data['force'] = True
 
-            # Get _entry_id
+            # Get the max identifier used until now
             MAX_NAME = 'max'
             function = plugins.toolkit.get_action('datastore_search_sql')
             own_req = {}
@@ -494,7 +500,7 @@ class RestfulDatastoreController(base.BaseController):
     def sql(self):
 
         def get_parameters():
-            return request.GET.mixed()
+            return self._parse_get_parameters()
 
         def response_parser(result, content_type):
             return self._parse_response(result, content_type, 'records')
