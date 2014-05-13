@@ -169,10 +169,7 @@ class RestfulDatastoreController(base.BaseController):
 
         # Parse based on the content-type
         if content_type == JSON:
-            if element == '':       # Return an empty response when we have an empty element
-                response_msg = ''
-            else:
-                response_msg = helpers.json.dumps(element)
+            response_msg = helpers.json.dumps(element)
         elif content_type == XML:
             # Include URL as attribute of each record
             if field == RECORDS and RESOURCE_ID in data:
@@ -194,7 +191,7 @@ class RestfulDatastoreController(base.BaseController):
             quality = float(1)
             
             if len(accept_entry) > 1:
-                regex_result = re.findall('q\=(\d*\.?\d*)$', accept_entry[1])
+                regex_result = re.findall('^q\=(\d*\.?\d*)$', accept_entry[1].strip())
                 if regex_result:
                     quality = float(regex_result[0])
 
@@ -249,10 +246,10 @@ class RestfulDatastoreController(base.BaseController):
                         del record['_id']
             return copy
 
-        context = self._get_context()
         return_dict = {}
 
         try:
+            context = self._get_context()                            # Get Context
             content_type = self._get_content_type(accepted_formats)  # Get return content-type
             request_data = get_parameters()                          # Get parameters
             function = plugins.toolkit.get_action(logic_function)    # Get logic function
@@ -323,8 +320,9 @@ class RestfulDatastoreController(base.BaseController):
                 if field['id'] == IDENTIFIER:
                     raise plugins.toolkit.ValidationError(_('The field \'%s\' cannot be used since it\'s used internally' % IDENTIFIER))
 
+            # If fields is not a list, we realy on CKAN operation to return the appropiate error
             if isinstance(request_data['fields'], list):
-                # Add the '#id' field in the fields parameter
+                # Add the 'pk' field in the fields parameter
                 request_data['fields'].insert(IDENTIFIER_POS, {'type': 'int', 'id': IDENTIFIER})
 
                 # Ignore primary_key field. The primary key is automatically set by us
@@ -399,14 +397,14 @@ class RestfulDatastoreController(base.BaseController):
                     del request_data[modified_parameter]
 
             #Push all the request parameters (except for the default ones) in the filters list
-            filters = {}
+            request_data['filters'] = {}
             for parameter in request_data:
                 if parameter not in DEFAULT_PARAMETERS:
-                    filters[parameter] = request_data[parameter]
+                    request_data['filters'][parameter] = request_data[parameter]
 
-            request_data['filters'] = {}
-            for filt in filters:
-                request_data['filters'][filt] = filters[filt]
+            # Remove parameters considered as filter from the request_data object since they
+            # are already in the filters object
+            for filt in request_data['filters']:
                 del request_data[filt]
 
             return request_data
