@@ -147,7 +147,7 @@ class RestfulDatastoreController(base.BaseController):
             return helpers.json.loads(request.body, encoding='utf-8')
         except ValueError, e:
             raise ValueError(_('JSON Error: Error decoding JSON data. '
-                        'Error: %r ' % e))
+                             'Error: %r ' % e))
 
     def _parse_response(self, data, content_type, field=None, entry=None):
         
@@ -174,7 +174,8 @@ class RestfulDatastoreController(base.BaseController):
             # Include URL as attribute of each record
             if field == RECORDS and RESOURCE_ID in data:
                 for k in data[RECORDS]:
-                    k['__url'] = 'http://%s/%s/%s/%s/%s' % (request.headers['host'], 'resource', data[RESOURCE_ID], 'entry', k[IDENTIFIER])
+                    if IDENTIFIER in k:
+                        k['__url'] = 'http://%s/%s/%s/%s/%s' % (request.headers['host'], 'resource', data[RESOURCE_ID], 'entry', k[IDENTIFIER])
 
             response_msg = response_parser.xml_parser(element, field_xml_name)
         elif content_type == CSV:
@@ -311,17 +312,29 @@ class RestfulDatastoreController(base.BaseController):
 
         def get_parameters():
 
+            def _not_valid_input():
+                raise plugins.toolkit.ValidationError({
+                    'message': _('Only lists of dicts can be placed to create resources'),
+                    'data': request_data['fields']
+                })
+
             request_data = {}
             request_data['fields'] = self._parse_body()
             request_data['force'] = True
             request_data[RESOURCE_ID] = resource_id
 
-            for field in request_data['fields']:
-                if field['id'] == IDENTIFIER:
-                    raise plugins.toolkit.ValidationError(_('The field \'%s\' cannot be used since it\'s used internally' % IDENTIFIER))
-
             # If fields is not a list, we realy on CKAN operation to return the appropiate error
-            if isinstance(request_data['fields'], list):
+            if not isinstance(request_data['fields'], list):
+                _not_valid_input()
+            else:
+                for field in request_data['fields']:
+                    if not isinstance(field, dict):
+                        _not_valid_input()
+                    else:
+                        # If 'id' is not in fields, CKAN will return its own error
+                        if 'id' in field and field['id'] == IDENTIFIER: 
+                            raise plugins.toolkit.ValidationError(_('The field \'%s\' cannot be used since it\'s used internally' % IDENTIFIER))
+
                 # Add the 'pk' field in the fields parameter
                 request_data['fields'].insert(IDENTIFIER_POS, {'type': 'int', 'id': IDENTIFIER})
 
@@ -358,14 +371,9 @@ class RestfulDatastoreController(base.BaseController):
     def delete_resource(self, resource_id):
 
         def get_parameters():
-            request_data = self._parse_get_parameters()
+            request_data = {}
             request_data[RESOURCE_ID] = resource_id
             request_data['force'] = True
-
-            # If the filters parameter is set, the resource won't be deleted. Only the elements that
-            # match this filter will be deleted so for this reason, it's necessary to remove this parameter
-            if 'filters' in request_data:
-                del request_data['filters']
 
             return request_data
 
@@ -418,11 +426,20 @@ class RestfulDatastoreController(base.BaseController):
 
         def get_parameters():
 
+            def _not_valid_input():
+                raise plugins.toolkit.ValidationError({
+                    'message': _('Only lists of dicts can be placed to create entries'),
+                    'data': request_data[RECORDS]
+                })
+
             request_data = {}
             request_data[RECORDS] = self._parse_body()
             request_data[RESOURCE_ID] = resource_id
             request_data['method'] = 'upsert'
             request_data['force'] = True
+
+            if not isinstance(request_data[RECORDS], list):
+                _not_valid_input()
 
             # Get the max identifier used until now
             MAX_NAME = 'max'
@@ -437,6 +454,9 @@ class RestfulDatastoreController(base.BaseController):
             #Asign pk to each record
             #The value specified by the user in the ID will be overwritten by our value
             for record in request_data[RECORDS]:
+                if not isinstance(record, dict):
+                    _not_valid_input()
+
                 if IDENTIFIER in record:
                     raise plugins.toolkit.ValidationError(_('The field \'%s\' is asigned automatically' % IDENTIFIER))
                 else:
@@ -463,7 +483,10 @@ class RestfulDatastoreController(base.BaseController):
             if isinstance(request_data[RECORDS], dict):
                 request_data[RECORDS] = [request_data[RECORDS]]
             else:
-                raise plugins.toolkit.ValidationError(_('Only a single object can be inserted by request'))
+                raise plugins.toolkit.ValidationError({
+                    'message': _('Only dicts can be placed to create/modify an entry'),
+                    'data': request_data[RECORDS]
+                })
 
             # The entry identifier cannot be changed
             if IDENTIFIER in request_data[RECORDS][0] and request_data[RECORDS][0][IDENTIFIER] != int(entry_id):
