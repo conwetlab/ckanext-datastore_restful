@@ -14,6 +14,8 @@ from nose.tools import assert_not_equal
 DEFAULT_FIELDS = [{'id': 'test', 'type': 'int'}, {'id': 'test1', 'type': 'text'}]
 DEFAULT_RECORDS = [{'test': 'test', 'test1': 'test1'}, {'test': '_test', 'test1': '_test1', controller.IDENTIFIER: 1}]
 INVALID_FIELDS = [{'_id': 'test', 'type': 'int'}, {'id': 'test1', '_type': 'text'}]
+FIELDS_PK = [{'id': controller.IDENTIFIER, 'type': 'int'}, {'id': 'test1', 'type': 'text'}]
+
 
 DEFAULT_LOGIC_FUNCTION_RES = {
     'fields': DEFAULT_FIELDS,
@@ -103,6 +105,8 @@ CSV = {'type': 'text/csv', 'expected': 'text/csv', 'response': 'CSV CONTENT'}
 JSON_XML = {'type': 'application/json,application/xml', 'expected': JSON['expected'], 'response': JSON['response']}
 JSON08_XML = {'type': 'application/json;q=0.8,application/xml', 'expected': XML['expected'], 'response': XML['response']}
 JSON08_XML07 = {'type': 'application/json;q=0.8,application/xml;q=0.7', 'expected': JSON['expected'], 'response': JSON['response']}
+XML07_ALL = {'type': 'application/xml;q=0.7,*/*', 'expected': JSON['expected'], 'response': JSON['response']}
+XML07_ALL06 = {'type': 'application/xml;q=0.7,*/*;q=0.6', 'expected': XML['expected'], 'response': XML['response']}
 JSON08_XML07_CSV_ACCEPTED = {'type': 'application/json;q=0.8,application/xml;q=0.7,text/csv',
                              'expected': CSV['expected'], 'response': CSV['response']}
 # JSON is returned when CSV type has priority and is not allowed
@@ -132,6 +136,12 @@ INVALID_CONTENT_CREATE_RESOURCE = {
     'status': 409,
     'type': 'Validation Error',
     'message': 'Only lists of dicts can be placed to create resources'
+}
+
+PK_CANNOT_BE_INCLUDED = {
+    'status': 409,
+    'type': 'Validation Error',
+    'message': 'The field \'%s\' cannot be used since it\'s used internally' % controller.IDENTIFIER
 }
 
 INVALID_CONTENT_UPSERT_ENTRY = {
@@ -173,14 +183,24 @@ class TestDataStoreController(object):
         logic_function.side_effect = side_effect['exception']
 
     def _generic_test(self, function, logic_functions_prop, content_type, resource_id=None, entry_id=None,
-                      get_content=None, post_content=None, fields=None, expected_error=None):
+                      get_content=None, post_content=None, fields=None, expected_error=None, jsonp=False):
+
+        # Append callback if JSONP is true
+        CALLBACK_FUNCTION = 'callback_function'
+        if jsonp:
+            controller.request.method = 'GET'
+            controller.request.params = {}
+            controller.request.params['callback'] = CALLBACK_FUNCTION
 
         # Set the content that will be read from the request
         controller.request.headers = {'ACCEPT': content_type['type'], 'host': 'localhost'}  # This object will be readed to decide the return content-type
         if post_content is not None:
             controller.request.body = json.dumps(post_content)                              # HTTP receives the content as JSON
         if get_content is not None:
-            controller.request.GET.mixed = Mock(return_value=copy.deepcopy(get_content))    # Set GET content
+            get_params = copy.deepcopy(get_content)
+            if jsonp:
+                get_params['callback'] = CALLBACK_FUNCTION
+            controller.request.GET.mixed = Mock(return_value=get_params)                    # Set GET content
         controller.response.headers = {}                                                    # This object will be used by _finish function
 
         logic_functions = {}
@@ -190,6 +210,18 @@ class TestDataStoreController(object):
         # Additional information is set to check that logic functions are called properly
         for function_prop in logic_functions_prop:
             return_value = function_prop['return_value'] if 'return_value' in function_prop else copy.deepcopy(DEFAULT_LOGIC_FUNCTION_RES)
+
+            # Include '_id' field, that is usually returned by CKAN
+            if 'records' in return_value:
+                _id = 0
+                for record in return_value['records']:
+                    _id += 1
+                    record['_id'] = _id
+
+            # Include '_id' in the fields field
+            if 'fields' in return_value and isinstance(return_value['fields'], list):
+                return_value['fields'].append({'id': '_id', 'type': 'int4'})
+
             logic_function = Mock(return_value=return_value)
 
             if 'side_effect' in function_prop and function_prop['side_effect'] is not None:
@@ -305,18 +337,25 @@ class TestDataStoreController(object):
             expected_response = JSON['response']
             expected_content_type = JSON['type']
 
+        # Check JSONP
+        if jsonp and expected_content_type == JSON['expected'] and controller.response.status_int == 200:
+            expected_response = '%s(%s);' % (CALLBACK_FUNCTION, expected_response)
+
         assert_equal(controller.response.status_int, expected_status)
         assert_equal(response, expected_response)
         assert expected_content_type in controller.response.headers['Content-Type']
 
     @parameterized.expand([
         ('71bba7b5-6882-4099-88b3-4ca9a7468b38', DEFAULT_FIELDS, JSON),
+        ('aa04a1b0-e007-11e3-8b68-0800200c9a66', DEFAULT_FIELDS, JSON, None, None, True),
         ('ddddbeab-d0e0-417a-9582-c7b02dd858da', DEFAULT_FIELDS, XML),
         ('7b98539d-57f8-466d-9810-91cff04848ff', DEFAULT_FIELDS, CSV, None, CSV_NOT_ACCEPTED),
         # Test different content-types
         ('acb56040-dffb-11e3-8b68-0800200c9a66', DEFAULT_FIELDS, JSON_XML),
         ('b78bbaa0-dffb-11e3-8b68-0800200c9a66', DEFAULT_FIELDS, JSON08_XML),
         ('bf251270-dffb-11e3-8b68-0800200c9a66', DEFAULT_FIELDS, JSON08_XML07),
+        ('442a9da4-6120-469f-81ba-3afa2257c198', DEFAULT_FIELDS, XML07_ALL),
+        ('abe4ff32-4303-4ec9-b876-09234e36b53a', DEFAULT_FIELDS, XML07_ALL06),
         ('c6724610-dffb-11e3-8b68-0800200c9a66', DEFAULT_FIELDS, JSON08_XML07_CSV_NOACCEPTED),
         # Test side_effects returned by the logic function
         ('8fa623dc-1368-4756-a741-15bba0b16fc9', DEFAULT_FIELDS, JSON, VALUE_ERROR),
@@ -345,11 +384,20 @@ class TestDataStoreController(object):
         ('19b55ee8-45f9-4b8f-8a5d-07d7f83d1e47', 1, CSV, None, CSV_NOT_ACCEPTED),
         # When an invalid field is included (missing _id), fields will be relayed to CKAN and it will be
         # its responsability to return the proper error
-        ('35db5c43-22f0-449e-8be3-477ddbf4f30a', INVALID_FIELDS, JSON),
-        ('770db970-ad4a-413e-9f2d-f98208da473d', INVALID_FIELDS, XML),
-        ('19b55ee8-45f9-4b8f-8a5d-07d7f83d1e47', INVALID_FIELDS, CSV, None, CSV_NOT_ACCEPTED)
+        ('5829f160-e00c-11e3-8b68-0800200c9a66', INVALID_FIELDS, JSON),
+        ('e9c48879-7520-44dc-9264-b1b51558670c', INVALID_FIELDS, XML),
+        ('b6da5c9c-6dbf-46f8-b8a6-859116c59ae4', INVALID_FIELDS, CSV, None, CSV_NOT_ACCEPTED),
+        # Lists of strings or other object different from dicts are invalid
+        ('40586a73-e2ce-4c64-8900-cf328526fa1d', ["test", 1], JSON, None, INVALID_CONTENT_CREATE_RESOURCE),
+        ('837bcede-e29d-4315-9624-517d6f5ae741', [2, "test"], XML, None, INVALID_CONTENT_CREATE_RESOURCE),
+        ('57d876f0-30b4-4acd-ab4f-3e6447683201', [3, "test"], CSV, None, CSV_NOT_ACCEPTED),
+        # 'pk' id cannot be used
+        ('72e1deb4-983c-46ee-a7eb-7af8fe92a61c', FIELDS_PK, JSON, None, PK_CANNOT_BE_INCLUDED),
+        ('022daa2e-8dcb-4d55-a37e-065ea699d4d5', FIELDS_PK, XML, None, PK_CANNOT_BE_INCLUDED),
+        ('79118e69-49d3-456b-a451-9ecd20f1deb5', FIELDS_PK, CSV, None, CSV_NOT_ACCEPTED)
+
     ])
-    def test_upsert_resource(self, resource_id, fields, content_type, side_effect=None, expected_error=None):
+    def test_upsert_resource(self, resource_id, fields, content_type, side_effect=None, expected_error=None, jsonp=None):
 
         # Generate the expected_call
         expected_call = {
@@ -371,20 +419,24 @@ class TestDataStoreController(object):
         logic_functions_prop[0]['side_effect'] = side_effect
         logic_functions_prop[0]['expected_call'] = expected_call
 
-        self._generic_test(self.restController.upsert_resource, logic_functions_prop, content_type,
-                           resource_id, post_content=fields, fields='fields', expected_error=expected_error)
+        self._generic_test(self.restController.upsert_resource, logic_functions_prop, content_type, resource_id,
+                           post_content=fields, fields='fields', expected_error=expected_error, jsonp=jsonp)
 
     @parameterized.expand([
         ('71bba7b5-6882-4099-88b3-4ca9a7468b38', JSON),
+        ('aa04a1b0-e007-11e3-8b68-0800200c9a66', JSON, None, None, True),
         ('ddddbeab-d0e0-417a-9582-c7b02dd858da', XML),
         ('7b98539d-57f8-466d-9810-91cff04848ff', CSV, None, CSV_NOT_ACCEPTED),
         # Test different content-types
         ('acb56040-dffb-11e3-8b68-0800200c9a66', JSON_XML),
         ('b78bbaa0-dffb-11e3-8b68-0800200c9a66', JSON08_XML),
         ('bf251270-dffb-11e3-8b68-0800200c9a66', JSON08_XML07),
+        ('442a9da4-6120-469f-81ba-3afa2257c198', XML07_ALL),
+        ('abe4ff32-4303-4ec9-b876-09234e36b53a', XML07_ALL06),
         ('c6724610-dffb-11e3-8b68-0800200c9a66', JSON08_XML07_CSV_NOACCEPTED),
         # Test side_effects returned by the logic function
         ('8fa623dc-1368-4756-a741-15bba0b16fc9', JSON, VALUE_ERROR),
+        ('b13a3930-e008-11e3-8b68-0800200c9a66', JSON, VALUE_ERROR, None, True),
         ('cad79527-a74f-49b9-93af-53cddad4f043', XML, VALUE_ERROR),
         ('5f86ad82-ebf5-4352-bb57-da647b3c14ea', CSV, VALUE_ERROR, CSV_NOT_ACCEPTED),
         ('a3bfd43b-6fa6-4baf-963b-67d5d796299b', JSON, DATA_ERROR),
@@ -400,7 +452,7 @@ class TestDataStoreController(object):
         ('3137df0f-4304-4166-a7a6-f0aa9b9ef13e', XML, VALIDATION_ERROR),
         ('2450063c-3085-415e-aab5-516d534e0c85', CSV, VALIDATION_ERROR, CSV_NOT_ACCEPTED)
     ])
-    def test_get_resource_structure(self, resource_id, content_type, side_effect=None, expected_error=None):
+    def test_get_resource_structure(self, resource_id, content_type, side_effect=None, expected_error=None, jsonp=False):
 
         expected_call = {
             'resource_id': resource_id
@@ -413,20 +465,24 @@ class TestDataStoreController(object):
         logic_functions_prop[0]['expected_call'] = expected_call
 
         self._generic_test(self.restController.structure, logic_functions_prop, content_type,
-                           resource_id, fields='fields', expected_error=expected_error)
+                           resource_id, fields='fields', expected_error=expected_error, jsonp=jsonp)
 
     @parameterized.expand([
         ('71bba7b5-6882-4099-88b3-4ca9a7468b38', {}, JSON),
+        ('aa04a1b0-e007-11e3-8b68-0800200c9a66', {}, JSON, None, None, True),
         ('ddddbeab-d0e0-417a-9582-c7b02dd858da', {}, XML),
         ('7b98539d-57f8-466d-9810-91cff04848ff', {}, CSV, None, CSV_NOT_ACCEPTED),
         # Test different content-types
         ('acb56040-dffb-11e3-8b68-0800200c9a66', {}, JSON_XML),
         ('b78bbaa0-dffb-11e3-8b68-0800200c9a66', {}, JSON08_XML),
         ('bf251270-dffb-11e3-8b68-0800200c9a66', {}, JSON08_XML07),
+        ('442a9da4-6120-469f-81ba-3afa2257c198', {}, XML07_ALL),
+        ('abe4ff32-4303-4ec9-b876-09234e36b53a', {}, XML07_ALL06),
         ('c6724610-dffb-11e3-8b68-0800200c9a66', {}, JSON08_XML07_CSV_NOACCEPTED),
         # Test side_effects returned by the logic function
         ('8fa623dc-1368-4756-a741-15bba0b16fc9', {}, JSON, VALUE_ERROR),
         ('cad79527-a74f-49b9-93af-53cddad4f043', {}, XML, VALUE_ERROR),
+        ('b13a3930-e008-11e3-8b68-0800200c9a66', {}, JSON, VALUE_ERROR, None, True),
         ('5f86ad82-ebf5-4352-bb57-da647b3c14ea', {}, CSV, VALUE_ERROR, CSV_NOT_ACCEPTED),
         ('a3bfd43b-6fa6-4baf-963b-67d5d796299b', {}, JSON, DATA_ERROR),
         ('1ba7d819-1d0e-43b1-93de-45afe000695d', {}, XML, DATA_ERROR),
@@ -447,7 +503,7 @@ class TestDataStoreController(object):
         ('3137df0f-4304-4166-a7a6-f0aa9b9ef13e', {'test': 'test'}, XML),
         ('3137df0f-4304-4166-a7a6-f0aa9b9ef13e', {'test': 'test'}, CSV, None, CSV_NOT_ACCEPTED)
     ])
-    def test_delete_resource(self, resource_id, get_parameters, content_type, side_effect=None, expected_error=None):
+    def test_delete_resource(self, resource_id, get_parameters, content_type, side_effect=None, expected_error=None, jsonp=False):
 
         # Filters cannot be included in the petition. Otherwise, only the elements that match the filters
         # will be deleted instead of deleting the full resource
@@ -463,19 +519,23 @@ class TestDataStoreController(object):
         logic_functions_prop[0]['expected_call'] = expected_call
 
         self._generic_test(self.restController.delete_resource, logic_functions_prop, content_type,
-                           resource_id, get_content=get_parameters, expected_error=expected_error)
+                           resource_id, get_content=get_parameters, expected_error=expected_error, jsonp=jsonp)
 
     @parameterized.expand([
         ('71bba7b5-6882-4099-88b3-4ca9a7468b38', DEFAULT_SEARCH, JSON),
+        ('aa04a1b0-e007-11e3-8b68-0800200c9a66', DEFAULT_SEARCH, JSON, None, None, True),
         ('ddddbeab-d0e0-417a-9582-c7b02dd858da', DEFAULT_SEARCH, XML),
         ('7b98539d-57f8-466d-9810-91cff04848ff', DEFAULT_SEARCH, CSV),
         # Test different content-types
         ('acb56040-dffb-11e3-8b68-0800200c9a66', DEFAULT_SEARCH, JSON_XML),
         ('b78bbaa0-dffb-11e3-8b68-0800200c9a66', DEFAULT_SEARCH, JSON08_XML),
         ('bf251270-dffb-11e3-8b68-0800200c9a66', DEFAULT_SEARCH, JSON08_XML07),
+        ('442a9da4-6120-469f-81ba-3afa2257c198', DEFAULT_SEARCH, XML07_ALL),
+        ('abe4ff32-4303-4ec9-b876-09234e36b53a', DEFAULT_SEARCH, XML07_ALL06),
         ('c6724610-dffb-11e3-8b68-0800200c9a66', DEFAULT_SEARCH, JSON08_XML07_CSV_ACCEPTED),
         # Test side_effects returned by the logic function
         ('8fa623dc-1368-4756-a741-15bba0b16fc9', DEFAULT_SEARCH, JSON, VALUE_ERROR),
+        ('b13a3930-e008-11e3-8b68-0800200c9a66', DEFAULT_SEARCH, JSON, VALUE_ERROR, None, True),
         ('cad79527-a74f-49b9-93af-53cddad4f043', DEFAULT_SEARCH, XML, VALUE_ERROR),
         ('5f86ad82-ebf5-4352-bb57-da647b3c14ea', DEFAULT_SEARCH, CSV, VALUE_ERROR),
         ('a3bfd43b-6fa6-4baf-963b-67d5d796299b', DEFAULT_SEARCH, JSON, DATA_ERROR),
@@ -494,7 +554,7 @@ class TestDataStoreController(object):
         ('ddddbeab-d0e0-417a-9582-c7b02dd858da', MALIGN_SEARCH, XML),
         ('7b98539d-57f8-466d-9810-91cff04848ff', MALIGN_SEARCH, CSV)
     ])
-    def test_search_resource(self, resource_id, get_parameters, content_type, side_effect=None, expected_error=None):
+    def test_search_resource(self, resource_id, get_parameters, content_type, side_effect=None, expected_error=None, jsonp=False):
 
         expected_call = {}
         expected_call['resource_id'] = resource_id
@@ -516,22 +576,26 @@ class TestDataStoreController(object):
         logic_functions_prop[0]['side_effect'] = side_effect
         logic_functions_prop[0]['expected_call'] = expected_call
 
-        self._generic_test(self.restController.search_entries, logic_functions_prop, content_type,
-                           resource_id, get_content=get_parameters, fields='records', expected_error=expected_error)
+        self._generic_test(self.restController.search_entries, logic_functions_prop, content_type, resource_id,
+                           get_content=get_parameters, fields='records', expected_error=expected_error, jsonp=jsonp)
 
     @parameterized.expand([
         ('71bba7b5-6882-4099-88b3-4ca9a7468b38', 1, JSON),
-        ('ddddbeab-d0e0-417a-9582-c7b02dd858da', 2, XML),
-        ('7b98539d-57f8-466d-9810-91cff04848ff', 3, CSV, None, CSV_NOT_ACCEPTED),
+        ('aa04a1b0-e007-11e3-8b68-0800200c9a66', 2, JSON, None, None, None, True),
+        ('ddddbeab-d0e0-417a-9582-c7b02dd858da', 3, XML),
+        ('7b98539d-57f8-466d-9810-91cff04848ff', 4, CSV, None, CSV_NOT_ACCEPTED),
         # Test different content-types
         ('acb56040-dffb-11e3-8b68-0800200c9a66', 1, JSON_XML),
         ('b78bbaa0-dffb-11e3-8b68-0800200c9a66', 2, JSON08_XML),
         ('bf251270-dffb-11e3-8b68-0800200c9a66', 3, JSON08_XML07),
-        ('c6724610-dffb-11e3-8b68-0800200c9a66', 4, JSON08_XML07_CSV_NOACCEPTED),
+        ('442a9da4-6120-469f-81ba-3afa2257c198', 4, XML07_ALL),
+        ('abe4ff32-4303-4ec9-b876-09234e36b53a', 5, XML07_ALL06),
+        ('c6724610-dffb-11e3-8b68-0800200c9a66', 6, JSON08_XML07_CSV_NOACCEPTED),
         # Test side_effects returned by the logic function
         ('8fa623dc-1368-4756-a741-15bba0b16fc9', 1, JSON, VALUE_ERROR),
-        ('cad79527-a74f-49b9-93af-53cddad4f043', 2, XML, VALUE_ERROR),
-        ('5f86ad82-ebf5-4352-bb57-da647b3c14ea', 3, CSV, VALUE_ERROR, CSV_NOT_ACCEPTED),
+        ('b13a3930-e008-11e3-8b68-0800200c9a66', 2, JSON, VALUE_ERROR, None, None, True),
+        ('cad79527-a74f-49b9-93af-53cddad4f043', 3, XML, VALUE_ERROR),
+        ('5f86ad82-ebf5-4352-bb57-da647b3c14ea', 4, CSV, VALUE_ERROR, CSV_NOT_ACCEPTED),
         ('a3bfd43b-6fa6-4baf-963b-67d5d796299b', 1, JSON, DATA_ERROR),
         ('1ba7d819-1d0e-43b1-93de-45afe000695d', 2, XML, DATA_ERROR),
         ('7c301e62-f302-4475-abe9-9411e3638118', 3, CSV, DATA_ERROR, CSV_NOT_ACCEPTED),
@@ -548,7 +612,7 @@ class TestDataStoreController(object):
         ('ddddbeab-d0e0-417a-9582-c7b02dd858da', 2, XML, None, NOT_FOUND_ENTRY, []),
         ('7b98539d-57f8-466d-9810-91cff04848ff', 3, CSV, None, CSV_NOT_ACCEPTED, [])
     ])
-    def test_get_entry(self, resource_id, entry_id, content_type, side_effect=None, expected_error=None, returned_records=None):
+    def test_get_entry(self, resource_id, entry_id, content_type, side_effect=None, expected_error=None, returned_records=None, jsonp=False):
 
         expected_call = {}
         expected_call['resource_id'] = resource_id
@@ -565,22 +629,26 @@ class TestDataStoreController(object):
         logic_functions_prop[0]['expected_call'] = expected_call
         logic_functions_prop[0]['return_value'] = return_value
 
-        self._generic_test(self.restController.get_entry, logic_functions_prop, content_type,
-                           resource_id, entry_id, fields='records', expected_error=expected_error)
+        self._generic_test(self.restController.get_entry, logic_functions_prop, content_type, resource_id,
+                           entry_id, fields='records', expected_error=expected_error, jsonp=jsonp)
 
     @parameterized.expand([
         ('71bba7b5-6882-4099-88b3-4ca9a7468b38', 1, DEFAULT_RECORDS[0], JSON),
-        ('ddddbeab-d0e0-417a-9582-c7b02dd858da', 2, DEFAULT_RECORDS[0], XML),
-        ('7b98539d-57f8-466d-9810-91cff04848ff', 3, DEFAULT_RECORDS[0], CSV, None, CSV_NOT_ACCEPTED),
+        ('aa04a1b0-e007-11e3-8b68-0800200c9a66', 2, DEFAULT_RECORDS[0], JSON, None, None, True),
+        ('ddddbeab-d0e0-417a-9582-c7b02dd858da', 3, DEFAULT_RECORDS[0], XML),
+        ('7b98539d-57f8-466d-9810-91cff04848ff', 4, DEFAULT_RECORDS[0], CSV, None, CSV_NOT_ACCEPTED),
         # Test different content-types
         ('acb56040-dffb-11e3-8b68-0800200c9a66', 1, DEFAULT_RECORDS[0], JSON_XML),
         ('b78bbaa0-dffb-11e3-8b68-0800200c9a66', 2, DEFAULT_RECORDS[0], JSON08_XML),
         ('bf251270-dffb-11e3-8b68-0800200c9a66', 3, DEFAULT_RECORDS[0], JSON08_XML07),
-        ('c6724610-dffb-11e3-8b68-0800200c9a66', 4, DEFAULT_RECORDS[0], JSON08_XML07_CSV_NOACCEPTED),
+        ('442a9da4-6120-469f-81ba-3afa2257c198', 4, DEFAULT_RECORDS[0], XML07_ALL),
+        ('abe4ff32-4303-4ec9-b876-09234e36b53a', 5, DEFAULT_RECORDS[0], XML07_ALL06),
+        ('c6724610-dffb-11e3-8b68-0800200c9a66', 6, DEFAULT_RECORDS[0], JSON08_XML07_CSV_NOACCEPTED),
         # Test side_effects returned by the logic function
         ('8fa623dc-1368-4756-a741-15bba0b16fc9', 1, DEFAULT_RECORDS[0], JSON, VALUE_ERROR),
-        ('cad79527-a74f-49b9-93af-53cddad4f043', 2, DEFAULT_RECORDS[0], XML, VALUE_ERROR),
-        ('5f86ad82-ebf5-4352-bb57-da647b3c14ea', 3, DEFAULT_RECORDS[0], CSV, VALUE_ERROR, CSV_NOT_ACCEPTED),
+        ('b13a3930-e008-11e3-8b68-0800200c9a66', 2, DEFAULT_RECORDS[0], JSON, VALUE_ERROR, None, True),
+        ('cad79527-a74f-49b9-93af-53cddad4f043', 3, DEFAULT_RECORDS[0], XML, VALUE_ERROR),
+        ('5f86ad82-ebf5-4352-bb57-da647b3c14ea', 4, DEFAULT_RECORDS[0], CSV, VALUE_ERROR, CSV_NOT_ACCEPTED),
         ('a3bfd43b-6fa6-4baf-963b-67d5d796299b', 1, DEFAULT_RECORDS[0], JSON, DATA_ERROR),
         ('1ba7d819-1d0e-43b1-93de-45afe000695d', 2, DEFAULT_RECORDS[0], XML, DATA_ERROR),
         ('7c301e62-f302-4475-abe9-9411e3638118', 3, DEFAULT_RECORDS[0], CSV, DATA_ERROR, CSV_NOT_ACCEPTED),
@@ -606,7 +674,7 @@ class TestDataStoreController(object):
         ('3137df0f-4304-4166-a7a6-f0aa9b9ef13e', 3, DEFAULT_RECORDS, XML, None, INVALID_CONTENT_UPSERT_ENTRY),
         ('2450063c-3085-415e-aab5-516d534e0c85', 3, DEFAULT_RECORDS, CSV, None, CSV_NOT_ACCEPTED)
     ])
-    def test_upsert_entry(self, resource_id, entry_id, record, content_type, side_effect=None, expected_error=None):
+    def test_upsert_entry(self, resource_id, entry_id, record, content_type, side_effect=None, expected_error=None, jsonp=False):
 
         records = [copy.deepcopy(record)] if isinstance(record, dict) else copy.deepcopy(record)
 
@@ -628,19 +696,24 @@ class TestDataStoreController(object):
         logic_functions_prop[0]['return_value'] = return_value
 
         self._generic_test(self.restController.upsert_entry, logic_functions_prop, content_type, resource_id,
-                           entry_id, post_content=record, fields='records', expected_error=expected_error)
+                           entry_id, post_content=record, fields='records', expected_error=expected_error, jsonp=jsonp)
 
     @parameterized.expand([
         ('71bba7b5-6882-4099-88b3-4ca9a7468b38', DEFAULT_RECORDS, JSON),
+        ('aa04a1b0-e007-11e3-8b68-0800200c9a66', DEFAULT_RECORDS, JSON, None, None, True, True, True),
         ('ddddbeab-d0e0-417a-9582-c7b02dd858da', DEFAULT_RECORDS, XML),
+        ('ddddbeab-d0e0-417a-9582-c7b02dd858da', DEFAULT_RECORDS, XML, None, None, True, False),
         ('7b98539d-57f8-466d-9810-91cff04848ff', DEFAULT_RECORDS, CSV, None, CSV_NOT_ACCEPTED),
         # Test different content-types
         ('acb56040-dffb-11e3-8b68-0800200c9a66', DEFAULT_RECORDS, JSON_XML),
         ('b78bbaa0-dffb-11e3-8b68-0800200c9a66', DEFAULT_RECORDS, JSON08_XML),
         ('bf251270-dffb-11e3-8b68-0800200c9a66', DEFAULT_RECORDS, JSON08_XML07),
+        ('442a9da4-6120-469f-81ba-3afa2257c198', DEFAULT_RECORDS, XML07_ALL),
+        ('abe4ff32-4303-4ec9-b876-09234e36b53a', DEFAULT_RECORDS, XML07_ALL06),
         ('c6724610-dffb-11e3-8b68-0800200c9a66', DEFAULT_RECORDS, JSON08_XML07_CSV_NOACCEPTED),
         # Test side_effects returned by the logic function
         ('8fa623dc-1368-4756-a741-15bba0b16fc9', DEFAULT_RECORDS, JSON, VALUE_ERROR),
+        ('b13a3930-e008-11e3-8b68-0800200c9a66', DEFAULT_RECORDS, JSON, VALUE_ERROR, None, True, True, True),
         ('cad79527-a74f-49b9-93af-53cddad4f043', DEFAULT_RECORDS, XML, VALUE_ERROR),
         ('5f86ad82-ebf5-4352-bb57-da647b3c14ea', DEFAULT_RECORDS, CSV, VALUE_ERROR, CSV_NOT_ACCEPTED),
         ('a3bfd43b-6fa6-4baf-963b-67d5d796299b', DEFAULT_RECORDS, JSON, DATA_ERROR),
@@ -671,9 +744,9 @@ class TestDataStoreController(object):
         ('3137df0f-4304-4166-a7a6-f0aa9b9ef13e', [8, "test", "test2"], XML, None, INVALID_CONTENT_CREATE_ENTRY),
         ('2450063c-3085-415e-aab5-516d534e0c85', ["test", 1, 3], CSV, None, CSV_NOT_ACCEPTED)
     ])
-    def test_create_entries(self, resource_id, records, content_type, side_effect=None, expected_error=None, remove_pk=True):
+    def test_create_entries(self, resource_id, records, content_type, side_effect=None, expected_error=None, remove_pk=True, max_pk_exists=True, jsonp=False):
 
-        max_pk = 8
+        max_pk = 8 if max_pk_exists else None
 
         expected_call_max = {}
         expected_call_max['sql'] = 'SELECT MAX(pk) AS max FROM \"%s\";' % resource_id
@@ -691,7 +764,7 @@ class TestDataStoreController(object):
         # set automatically by the API
         expected_records = copy.deepcopy(records)
         if isinstance(records, list):
-            pk = max_pk
+            pk = max_pk if max_pk else 0
             for record in expected_records:
                 if isinstance(record, dict):
                     pk += 1
@@ -719,22 +792,26 @@ class TestDataStoreController(object):
         logic_functions_prop[1]['side_effect'] = side_effect
         logic_functions_prop[1]['expected_call'] = expected_call_upsert
 
-        self._generic_test(self.restController.create_entries, logic_functions_prop, content_type,
-                           resource_id, post_content=records, fields='records', expected_error=expected_error)
+        self._generic_test(self.restController.create_entries, logic_functions_prop, content_type, resource_id,
+                           post_content=records, fields='records', expected_error=expected_error, jsonp=jsonp)
 
     @parameterized.expand([
         ('71bba7b5-6882-4099-88b3-4ca9a7468b38', 1, JSON),
-        ('ddddbeab-d0e0-417a-9582-c7b02dd858da', 2, XML),
-        ('7b98539d-57f8-466d-9810-91cff04848ff', 3, CSV, None, CSV_NOT_ACCEPTED),
+        ('aa04a1b0-e007-11e3-8b68-0800200c9a66', 2, JSON, None, None, None, True),
+        ('ddddbeab-d0e0-417a-9582-c7b02dd858da', 3, XML),
+        ('7b98539d-57f8-466d-9810-91cff04848ff', 4, CSV, None, CSV_NOT_ACCEPTED),
         # Test different content-types
         ('acb56040-dffb-11e3-8b68-0800200c9a66', 1, JSON_XML),
         ('b78bbaa0-dffb-11e3-8b68-0800200c9a66', 2, JSON08_XML),
         ('bf251270-dffb-11e3-8b68-0800200c9a66', 3, JSON08_XML07),
-        ('c6724610-dffb-11e3-8b68-0800200c9a66', 4, JSON08_XML07_CSV_NOACCEPTED),
+        ('442a9da4-6120-469f-81ba-3afa2257c198', 4, XML07_ALL),
+        ('abe4ff32-4303-4ec9-b876-09234e36b53a', 5, XML07_ALL06),
+        ('c6724610-dffb-11e3-8b68-0800200c9a66', 6, JSON08_XML07_CSV_NOACCEPTED),
         # Test side_effects returned by the logic function
         ('8fa623dc-1368-4756-a741-15bba0b16fc9', 1, JSON, VALUE_ERROR),
-        ('cad79527-a74f-49b9-93af-53cddad4f043', 2, XML, VALUE_ERROR),
-        ('5f86ad82-ebf5-4352-bb57-da647b3c14ea', 3, CSV, VALUE_ERROR, CSV_NOT_ACCEPTED),
+        ('b13a3930-e008-11e3-8b68-0800200c9a66', 2, JSON, VALUE_ERROR, None, None, True),
+        ('cad79527-a74f-49b9-93af-53cddad4f043', 3, XML, VALUE_ERROR),
+        ('5f86ad82-ebf5-4352-bb57-da647b3c14ea', 4, CSV, VALUE_ERROR, CSV_NOT_ACCEPTED),
         ('a3bfd43b-6fa6-4baf-963b-67d5d796299b', 1, JSON, DATA_ERROR),
         ('1ba7d819-1d0e-43b1-93de-45afe000695d', 2, XML, DATA_ERROR),
         ('7c301e62-f302-4475-abe9-9411e3638118', 3, CSV, DATA_ERROR, CSV_NOT_ACCEPTED),
@@ -751,7 +828,7 @@ class TestDataStoreController(object):
         ('ddddbeab-d0e0-417a-9582-c7b02dd858da', 2, XML, None, NOT_FOUND_ENTRY, []),
         ('7b98539d-57f8-466d-9810-91cff04848ff', 3, CSV, None, CSV_NOT_ACCEPTED, []),
     ])
-    def test_delete_entry(self, resource_id, entry_id, content_type, side_effect=None, expected_error=None, returned_records=None):
+    def test_delete_entry(self, resource_id, entry_id, content_type, side_effect=None, expected_error=None, returned_records=None, jsonp=False):
 
         expected_call_search = {}
         expected_call_search = {}
@@ -780,19 +857,23 @@ class TestDataStoreController(object):
         logic_functions_prop[1]['expected_call'] = expected_call_del
 
         self._generic_test(self.restController.delete_entry, logic_functions_prop, content_type,
-                           resource_id, entry_id, expected_error=expected_error)
+                           resource_id, entry_id, expected_error=expected_error, jsonp=jsonp)
 
     @parameterized.expand([
         ('select * from 71bba7b5-6882-4099-88b3-4ca9a7468b38', JSON),
+        ('select * from aa04a1b0-e007-11e3-8b68-0800200c9a66', JSON, None, None, True),
         ('select * from ddddbeab-d0e0-417a-9582-c7b02dd858da', XML),
         ('select * from 7b98539d-57f8-466d-9810-91cff04848ff', CSV),
         # Test different content-types
         ('select * from acb56040-dffb-11e3-8b68-0800200c9a66', JSON_XML),
         ('select * from b78bbaa0-dffb-11e3-8b68-0800200c9a66', JSON08_XML),
         ('select * from bf251270-dffb-11e3-8b68-0800200c9a66', JSON08_XML07),
+        ('select * from 442a9da4-6120-469f-81ba-3afa2257c198', XML07_ALL),
+        ('select * from abe4ff32-4303-4ec9-b876-09234e36b53a', XML07_ALL06),
         ('select * from c6724610-dffb-11e3-8b68-0800200c9a66', JSON08_XML07_CSV_ACCEPTED),
         # Test side_effects returned by the logic function
         ('select * from 8fa623dc-1368-4756-a741-15bba0b16fc9', JSON, VALUE_ERROR),
+        ('select * fromb13a3930-e008-11e3-8b68-0800200c9a66', JSON, VALUE_ERROR, None, True),
         ('select * from cad79527-a74f-49b9-93af-53cddad4f043', XML, VALUE_ERROR),
         ('select * from 5f86ad82-ebf5-4352-bb57-da647b3c14ea', CSV, VALUE_ERROR),
         ('select * from a3bfd43b-6fa6-4baf-963b-67d5d796299b', JSON, DATA_ERROR),
@@ -817,7 +898,7 @@ class TestDataStoreController(object):
         ('select * from c82f424b-2dbe-4a7a-b386-0ac08c3f25eb', XML, SEARCH_INDEX_ERROR),
         ('select * from f5e46a31-e9e9-40a8-b655-6368b5a04e1c', CSV, SEARCH_INDEX_ERROR)
     ])
-    def test_sql(self, sql, content_type, side_effect=None, expected_error=None):
+    def test_sql(self, sql, content_type, side_effect=None, expected_error=None, jsonp=False):
 
         get_parameters = {}
         get_parameters['sql'] = sql
@@ -830,5 +911,5 @@ class TestDataStoreController(object):
         logic_functions_prop[0]['side_effect'] = side_effect
         logic_functions_prop[0]['expected_call'] = expected_call
 
-        self._generic_test(self.restController.sql, logic_functions_prop, content_type,
-                           get_content=get_parameters, fields='records', expected_error=expected_error)
+        self._generic_test(self.restController.sql, logic_functions_prop, content_type, get_content=get_parameters,
+                           fields='records', expected_error=expected_error, jsonp=jsonp)

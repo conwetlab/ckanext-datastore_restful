@@ -61,7 +61,7 @@ class RestfulDatastoreController(base.BaseController):
         assert(isinstance(status_int, int))
         response.status_int = status_int
         response.headers['Content-Type'] = CONTENT_TYPES[content_type]
-        
+
         # Support "JSONP" callback
         if content_type == JSON and status_int == 200 and CALLBACK_PARAMETER in request.params and \
                 request.method == 'GET':
@@ -94,16 +94,16 @@ class RestfulDatastoreController(base.BaseController):
         return self._finish(status_int, response_data, content_type)
 
     def _finish_error(self, error_code, error_type, extra_msg=None):
-        
+
         response_data = {}
         response_data['error'] = {}
         response_data['error']['__type'] = error_type
-        
+
         if extra_msg:
             response_data['error']['message'] = _(extra_msg)
 
         return self._parse_and_finish(error_code, response_data)
-        
+
     def _finish_not_authz(self, extra_msg=None):
         return self._finish_error(403, _('Access denied'), extra_msg)
 
@@ -150,7 +150,7 @@ class RestfulDatastoreController(base.BaseController):
                              'Error: %r ' % e))
 
     def _parse_response(self, data, content_type, field=None, entry=None):
-        
+
         response_msg = None
         element = data
         field_xml_name = field
@@ -159,9 +159,7 @@ class RestfulDatastoreController(base.BaseController):
         if field:
             if field in element:
                 element = element[field]
-            else:
-                element = []
-        
+
         # Maybe only just one element is intendeed to be returned
         if entry is not None:
             element = element[entry]
@@ -180,7 +178,7 @@ class RestfulDatastoreController(base.BaseController):
             response_msg = response_parser.xml_parser(element, field_xml_name)
         elif content_type == CSV:
             response_msg = response_parser.csv_parser(data)
-        
+
         return response_msg
 
     def _entry_not_found(self, resource_id, entry_id):
@@ -190,14 +188,14 @@ class RestfulDatastoreController(base.BaseController):
 
         def _get_quality(accept_entry):
             quality = float(1)
-            
+
             if len(accept_entry) > 1:
                 regex_result = re.findall('^q\=(\d*\.?\d*)$', accept_entry[1].strip())
                 if regex_result:
                     quality = float(regex_result[0])
 
             return quality
-        
+
         accept_header = request.headers['ACCEPT']
         accepts = accept_header.split(',')
         valid_accepts = {}
@@ -231,7 +229,7 @@ class RestfulDatastoreController(base.BaseController):
         if not content_type:
             allowed_accepts = ', '.join(CONTENT_TYPES[k].split(';')[0] for k in accepted_headers if k in CONTENT_TYPES)
             raise plugins.toolkit.ValidationError({
-                'data': { 'Accept': accept_header },
+                'data': {'Accept': accept_header},
                 'message': 'Only %s can be placed in the \'Accept\' header for this request' % allowed_accepts
             })
 
@@ -258,50 +256,50 @@ class RestfulDatastoreController(base.BaseController):
             result = _remove_identifier(result)                      # Remove _id from the results
             response_data = response_parser(result, content_type)    # Parse the results
             return self._finish_ok(response_data, content_type)      # Return the response
-            
+
         except ValueError as e:
             return self._finish_bad_request(e)
-        
+
         except dictization_functions.DataError as e:
             return_dict['error'] = {'__type': 'Integrity Error',
                                     'message': e.error,
                                     'data': request_data}
             return self._parse_and_finish(400, return_dict, content_type='json')
-        
+
         except plugins.toolkit.NotAuthorized as e:
             return self._finish_not_authz(e.extra_msg)
-        
+
         except plugins.toolkit.ObjectNotFound as e:
             return self._finish_not_found(e.extra_msg)
-        
+
         except plugins.toolkit.ValidationError as e:
             error_dict = e.error_dict
             error_dict['__type'] = 'Validation Error'
             return_dict['error'] = error_dict
             # CS nasty_string ignore
             return self._parse_and_finish(409, return_dict)
-        
+
         except search.SearchQueryError as e:
             return_dict['error'] = {'__type': 'Search Query Error',
                                     'message': 'Search Query is invalid: %r' %
                                     e.args}
             return self._parse_and_finish(400, return_dict)
-        
+
         except search.SearchError as e:
             return_dict['error'] = {'__type': 'Search Error',
                                     'message': 'Search error: %r' % e.args}
             return self._parse_and_finish(409, return_dict)
-        
+
         except search.SearchIndexError as e:
             return_dict['error'] = {'__type': 'Search Index Error',
-                    'message': 'Unable to add package to search index: %s' %
-                    str(e)}
+                                    'message': 'Unable to add package to search index: %s' %
+                                    str(e)}
             return self._parse_and_finish(500, return_dict)
 
         except Exception as e:
             log.exception('Unexpected exception')
             return_dict['error'] = {'__type': 'Unexpected Error',
-                    'message': '%s: %s' % (type(e).__name__, str(e)) }
+                                    'message': '%s: %s' % (type(e).__name__, str(e))}
             return self._parse_and_finish(500, return_dict)
 
     ###############################################################################################
@@ -332,7 +330,7 @@ class RestfulDatastoreController(base.BaseController):
                         _not_valid_input()
                     else:
                         # If 'id' is not in fields, CKAN will return its own error
-                        if 'id' in field and field['id'] == IDENTIFIER: 
+                        if 'id' in field and field['id'] == IDENTIFIER:
                             raise plugins.toolkit.ValidationError(_('The field \'%s\' cannot be used since it\'s used internally' % IDENTIFIER))
 
                 # Add the 'pk' field in the fields parameter
@@ -421,7 +419,7 @@ class RestfulDatastoreController(base.BaseController):
             return self._parse_response(result, content_type, RECORDS)
 
         return self._execute_logic_function('datastore_search', get_parameters, response_parser, [XML, JSON, CSV])
-        
+
     def create_entries(self, resource_id):
 
         def get_parameters():
@@ -448,7 +446,7 @@ class RestfulDatastoreController(base.BaseController):
             own_req['sql'] = 'SELECT MAX(pk) AS %s FROM \"%s\";' % (MAX_NAME, resource_id)
             max_id = function(self._get_context(), own_req)[RECORDS][0][MAX_NAME]
 
-            if not max_id:
+            if max_id is None:
                 max_id = 0
 
             #Asign pk to each record
@@ -562,4 +560,3 @@ class RestfulDatastoreController(base.BaseController):
             return self._parse_response(result, content_type, RECORDS)
 
         return self._execute_logic_function('datastore_search_sql', get_parameters, response_parser, [XML, JSON, CSV])
-
