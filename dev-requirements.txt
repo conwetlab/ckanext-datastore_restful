@@ -1,1 +1,1 @@
-nose_parameterized=0.3.3
+nose_parameterized==0.3.3
