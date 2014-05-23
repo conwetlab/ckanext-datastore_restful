@@ -39,9 +39,6 @@ EXAMPLE_CONTENT = {
 class TestUtils(object):
     '''Tests for the module.'''
 
-    def __init__(self):
-        self.mocks = {}
-
     def setup(self):
 
         # Save some functions that will be mocked

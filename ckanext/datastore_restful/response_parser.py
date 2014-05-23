@@ -39,7 +39,7 @@ def xml_parser(result, root):
             return False
 
     def dict2xml(d, root_node=None, start=False):
-        wrap = False if None == root_node or (isinstance(d, list) and not start) else True
+        wrap = True if root_node is not None or (isinstance(d, list) and start) else False
         root = 'rows' if None == root_node or not key_is_valid_xml(root_node) else root_node
         root_singular = root[:-1] if 's' == root[-1] else root
         xml = ''
@@ -47,10 +47,6 @@ def xml_parser(result, root):
 
         if isinstance(d, dict):
             for key, value in dict.items(d):
-                if isinstance(value, dict):
-                    children.append(dict2xml(value, key))
-                elif isinstance(value, list):
-                    children.append(dict2xml(value, key))
                 if key.startswith('__'):
                     xml = xml + ' ' + key[2:] + '="' + xml_escape(unicode(value)) + '"'
                 else:
