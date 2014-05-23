@@ -1,40 +1,20 @@
-import cgi
 import logging
-import re
-import operator
 
 import ckan.plugins as plugins
 import ckan.lib.base as base
 import ckan.model as model
-import ckan.lib.helpers as helpers
 import ckan.lib.navl.dictization_functions as dictization_functions
 import ckan.lib.search as search
-import ckanext.datastore_restful.response_parser as response_parser
+import ckanext.datastore_restful.utils as utils
 
-from ckan.common import _, request, response
+from ckan.common import _, request
 
 log = logging.getLogger(__name__)
-
-TEXT = 'text'
-HTML = 'html'
-JSON = 'json'
-XML = 'xml'
-CSV = 'csv'
-
-CONTENT_TYPES = {
-    TEXT: 'text/plain;charset=utf-8',
-    HTML: 'text/html;charset=utf-8',
-    JSON: 'application/json;charset=utf-8',
-    XML: 'application/xml;charset=utf-8',
-    CSV: 'text/csv;charset=utf-8'
-}
 
 IDENTIFIER = 'pk'
 IDENTIFIER_POS = 0
 CKAN_IDENTIFIER = '_id'
-DEFAULT_ACCEPT = '*/*'
 
-CALLBACK_PARAMETER = 'callback'
 RESOURCE_ID = 'resource_id'
 RECORDS = 'records'
 
@@ -47,87 +27,19 @@ class RestfulDatastoreController(base.BaseController):
         return base.BaseController.__call__(self, environ, start_response)
 
     ###############################################################################################
-    ##########################################  FINISH  ###########################################
-    ###############################################################################################
-
-    def _finish(self, status_int, response_data=None,
-                content_type='text'):
-        '''When a controller method has completed, call this method
-        to prepare the response.
-        @return response message - return this value from the controller
-                                   method
-                 e.g. return self._finish(404, 'Package not found')
-        '''
-        assert(isinstance(status_int, int))
-        response.status_int = status_int
-        response.headers['Content-Type'] = CONTENT_TYPES[content_type]
-
-        # Support "JSONP" callback
-        if content_type == JSON and status_int == 200 and CALLBACK_PARAMETER in request.params and \
-                request.method == 'GET':
-                callback = cgi.escape(request.params[CALLBACK_PARAMETER])
-                response_data = self._wrap_jsonp(callback, response_data)
-
-        return response_data
-
-    def _parse_and_finish(self, status_int, response_data, content_type=JSON):
-        parsed_data = self._parse_response(response_data, content_type)
-        return self._finish(status_int, parsed_data, content_type)
-
-    def _finish_ok(self, response_data=None,
-                   content_type='json',
-                   resource_location=None):
-        '''If a controller method has completed successfully then
-        calling this method will prepare the response.
-        @param resource_location - specify this if a new
-           resource has just been created.
-        @return response message - return this value from the controller
-                                   method
-                                   e.g. return self._finish_ok(pkg_dict)
-        '''
-        if resource_location:
-            status_int = 201
-            self._set_response_header('Location', resource_location)
-        else:
-            status_int = 200
-
-        return self._finish(status_int, response_data, content_type)
-
-    def _finish_error(self, error_code, error_type, extra_msg=None):
-
-        response_data = {}
-        response_data['error'] = {}
-        response_data['error']['__type'] = error_type
-
-        if extra_msg:
-            response_data['error']['message'] = _(extra_msg)
-
-        return self._parse_and_finish(error_code, response_data)
-
-    def _finish_not_authz(self, extra_msg=None):
-        return self._finish_error(403, _('Access denied'), extra_msg)
-
-    def _finish_not_found(self, extra_msg=None):
-        return self._finish_error(404, _('Not found'), extra_msg)
-
-    def _finish_bad_request(self, extra_msg=None):
-        return self._finish_error(400, _('Bad request'), extra_msg)
-
-    ###############################################################################################
     #########################################  AUXILIAR  ##########################################
     ###############################################################################################
 
-    def _wrap_jsonp(self, callback, response_msg):
-        return '%s(%s);' % (callback, response_msg)
+    def _parse_response(self, data, content_type, field=None, entry=None):
 
-    def _set_response_header(self, name, value):
-        try:
-            value = str(value)
-        except Exception, inst:
-            msg = "Couldn't convert '%s' header value '%s' to string: %s" % \
-                (name, value, inst)
-            raise Exception(msg)
-        response.headers[name] = value
+        if content_type == utils.XML:
+            # Include URL as attribute of each record
+            if field == RECORDS and RESOURCE_ID in data:
+                for k in data[RECORDS]:
+                    if IDENTIFIER in k:
+                        k['__url'] = 'http://%s/%s/%s/%s/%s' % (request.headers['host'], 'resource', data[RESOURCE_ID], 'entry', k[IDENTIFIER])
+
+        return utils.parse_response(data, content_type, field, entry)
 
     def _get_context(self):
         return {
@@ -136,106 +48,10 @@ class RestfulDatastoreController(base.BaseController):
             'user': plugins.toolkit.c.user
         }
 
-    def _parse_get_parameters(self):
-        get_parameters = request.GET.mixed()
-        if CALLBACK_PARAMETER in get_parameters:
-            del get_parameters[CALLBACK_PARAMETER]
-        return get_parameters
-
-    def _parse_body(self):
-        try:
-            return helpers.json.loads(request.body, encoding='utf-8')
-        except ValueError, e:
-            raise ValueError(_('JSON Error: Error decoding JSON data. '
-                             'Error: %r ' % e))
-
-    def _parse_response(self, data, content_type, field=None, entry=None):
-
-        response_msg = None
-        element = data
-        field_xml_name = field
-
-        # Maybe just a part of the data is intendeed to be returned
-        if field:
-            if field in element:
-                element = element[field]
-
-        # Maybe only just one element is intendeed to be returned
-        if entry is not None:
-            element = element[entry]
-            field_xml_name = field_xml_name[:-1]
-
-        # Parse based on the content-type
-        if content_type == JSON:
-            response_msg = helpers.json.dumps(element)
-        elif content_type == XML:
-            # Include URL as attribute of each record
-            if field == RECORDS and RESOURCE_ID in data:
-                for k in data[RECORDS]:
-                    if IDENTIFIER in k:
-                        k['__url'] = 'http://%s/%s/%s/%s/%s' % (request.headers['host'], 'resource', data[RESOURCE_ID], 'entry', k[IDENTIFIER])
-
-            response_msg = response_parser.xml_parser(element, field_xml_name)
-        elif content_type == CSV:
-            response_msg = response_parser.csv_parser(data)
-
-        return response_msg
-
     def _entry_not_found(self, resource_id, entry_id):
         return plugins.toolkit.ObjectNotFound(_('The element %s does not exist in the resource %s' % (entry_id, resource_id)))
 
-    def _get_content_type(self, accepted_headers):
-
-        def _get_quality(accept_entry):
-            quality = float(1)
-
-            if len(accept_entry) > 1:
-                regex_result = re.findall('^q\=(\d*\.?\d*)$', accept_entry[1].strip())
-                if regex_result:
-                    quality = float(regex_result[0])
-
-            return quality
-
-        accept_header = request.headers['ACCEPT']
-        accepts = accept_header.split(',')
-        valid_accepts = {}
-        content_type = None
-
-        for accept in accepts:
-            accept_entry = accept.split(';')
-            accept_type = accept_entry[0].strip().lower()
-
-            # Accept */*. JSON is tried to be returned by default
-            if DEFAULT_ACCEPT in accept_type:
-                if not JSON in valid_accepts:
-                    valid_accepts[JSON] = _get_quality(accept_entry)
-            else:
-                for key in accepted_headers:
-                    # Ex: "application/json" in "application/json; chatset=..."
-                    if key in CONTENT_TYPES and accept_type in CONTENT_TYPES[key]:
-                        valid_accepts[key] = _get_quality(accept_entry)
-                        break
-
-        if len(valid_accepts) > 0:
-            max_quality = max(valid_accepts.iteritems(), key=operator.itemgetter(1))  # 0: key, 1: value
-
-            # It's necessary to check if the highest quality is the same than the one of JSON
-            # In that case, JSON will be returned
-            if JSON in valid_accepts and max_quality[1] == valid_accepts[JSON]:
-                content_type = JSON
-            else:
-                content_type = max_quality[0]
-
-        if not content_type:
-            allowed_accepts = ', '.join(CONTENT_TYPES[k].split(';')[0] for k in accepted_headers if k in CONTENT_TYPES)
-            raise plugins.toolkit.ValidationError({
-                'data': {'Accept': accept_header},
-                'message': 'Only %s can be placed in the \'Accept\' header for this request' % allowed_accepts
-            })
-
-        return content_type
-
-    def _execute_logic_function(self, logic_function, get_parameters, response_parser, accepted_formats=[JSON, XML]):
+    def _execute_logic_function(self, logic_function, get_parameters, response_parser, accepted_formats=[utils.JSON, utils.XML]):
 
         def _remove_identifier(result):
             copy = result.copy()
@@ -249,58 +65,58 @@ class RestfulDatastoreController(base.BaseController):
 
         try:
             context = self._get_context()                            # Get Context
-            content_type = self._get_content_type(accepted_formats)  # Get return content-type
+            content_type = utils.get_content_type(accepted_formats)  # Get return content-type
             request_data = get_parameters()                          # Get parameters
             function = plugins.toolkit.get_action(logic_function)    # Get logic function
             result = function(context, request_data)                 # Execute the function
             result = _remove_identifier(result)                      # Remove _id from the results
             response_data = response_parser(result, content_type)    # Parse the results
-            return self._finish_ok(response_data, content_type)      # Return the response
+            return utils.finish_ok(response_data, content_type)      # Return the response
 
         except ValueError as e:
-            return self._finish_bad_request(e)
+            return utils.finish_bad_request(e)
 
         except dictization_functions.DataError as e:
             return_dict['error'] = {'__type': 'Integrity Error',
                                     'message': e.error,
                                     'data': request_data}
-            return self._parse_and_finish(400, return_dict, content_type='json')
+            return utils.parse_and_finish(400, return_dict, content_type='json')
 
         except plugins.toolkit.NotAuthorized as e:
-            return self._finish_not_authz(e.extra_msg)
+            return utils.finish_not_authz(e.extra_msg)
 
         except plugins.toolkit.ObjectNotFound as e:
-            return self._finish_not_found(e.extra_msg)
+            return utils.finish_not_found(e.extra_msg)
 
         except plugins.toolkit.ValidationError as e:
             error_dict = e.error_dict
             error_dict['__type'] = 'Validation Error'
             return_dict['error'] = error_dict
             # CS nasty_string ignore
-            return self._parse_and_finish(409, return_dict)
+            return utils.parse_and_finish(409, return_dict)
 
         except search.SearchQueryError as e:
             return_dict['error'] = {'__type': 'Search Query Error',
                                     'message': 'Search Query is invalid: %r' %
                                     e.args}
-            return self._parse_and_finish(400, return_dict)
+            return utils.parse_and_finish(400, return_dict)
 
         except search.SearchError as e:
             return_dict['error'] = {'__type': 'Search Error',
                                     'message': 'Search error: %r' % e.args}
-            return self._parse_and_finish(409, return_dict)
+            return utils.parse_and_finish(409, return_dict)
 
         except search.SearchIndexError as e:
             return_dict['error'] = {'__type': 'Search Index Error',
                                     'message': 'Unable to add package to search index: %s' %
                                     str(e)}
-            return self._parse_and_finish(500, return_dict)
+            return utils.parse_and_finish(500, return_dict)
 
         except Exception as e:
             log.exception('Unexpected exception')
             return_dict['error'] = {'__type': 'Unexpected Error',
                                     'message': '%s: %s' % (type(e).__name__, str(e))}
-            return self._parse_and_finish(500, return_dict)
+            return utils.parse_and_finish(500, return_dict)
 
     ###############################################################################################
     ########################################  RESOURCES  ##########################################
@@ -317,7 +133,7 @@ class RestfulDatastoreController(base.BaseController):
                 })
 
             request_data = {}
-            request_data['fields'] = self._parse_body()
+            request_data['fields'] = utils.parse_body()
             request_data['force'] = True
             request_data[RESOURCE_ID] = resource_id
 
@@ -390,7 +206,7 @@ class RestfulDatastoreController(base.BaseController):
             PARAMETERS_TO_TRANSFORM = ['q', 'plain', 'language', 'limit', 'offset', 'fields', 'sort']
             DEFAULT_PARAMETERS = [RESOURCE_ID, 'filters'] + PARAMETERS_TO_TRANSFORM
 
-            request_data = self._parse_get_parameters()
+            request_data = utils.parse_get_parameters()
 
             #Append resource_id
             request_data[RESOURCE_ID] = resource_id
@@ -418,7 +234,8 @@ class RestfulDatastoreController(base.BaseController):
         def response_parser(result, content_type):
             return self._parse_response(result, content_type, RECORDS)
 
-        return self._execute_logic_function('datastore_search', get_parameters, response_parser, [XML, JSON, CSV])
+        return self._execute_logic_function('datastore_search', get_parameters, response_parser,
+                                            [utils.XML, utils.JSON, utils.CSV])
 
     def create_entries(self, resource_id):
 
@@ -431,7 +248,7 @@ class RestfulDatastoreController(base.BaseController):
                 })
 
             request_data = {}
-            request_data[RECORDS] = self._parse_body()
+            request_data[RECORDS] = utils.parse_body()
             request_data[RESOURCE_ID] = resource_id
             request_data['method'] = 'upsert'
             request_data['force'] = True
@@ -473,7 +290,7 @@ class RestfulDatastoreController(base.BaseController):
         def get_parameters():
 
             request_data = {}
-            request_data[RECORDS] = self._parse_body()
+            request_data[RECORDS] = utils.parse_body()
             request_data[RESOURCE_ID] = resource_id
             request_data['method'] = 'upsert'
             request_data['force'] = True
@@ -554,9 +371,10 @@ class RestfulDatastoreController(base.BaseController):
     def sql(self):
 
         def get_parameters():
-            return self._parse_get_parameters()
+            return utils.parse_get_parameters()
 
         def response_parser(result, content_type):
             return self._parse_response(result, content_type, RECORDS)
 
-        return self._execute_logic_function('datastore_search_sql', get_parameters, response_parser, [XML, JSON, CSV])
+        return self._execute_logic_function('datastore_search_sql', get_parameters, response_parser,
+                                            [utils.XML, utils.JSON, utils.CSV])
