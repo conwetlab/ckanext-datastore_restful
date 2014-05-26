@@ -235,7 +235,7 @@ class RestfulDatastoreController(base.BaseController):
             return self._parse_response(result, content_type, RECORDS)
 
         return self._execute_logic_function('datastore_search', get_parameters, response_parser,
-                                            [utils.XML, utils.JSON, utils.CSV])
+                                            [utils.JSON, utils.XML, utils.CSV])
 
     def create_entries(self, resource_id):
 
@@ -323,6 +323,7 @@ class RestfulDatastoreController(base.BaseController):
     def get_entry(self, resource_id, entry_id):
 
         def get_parameters():
+
             request_data = {}
             request_data['filters'] = {}
             request_data['filters'][IDENTIFIER] = entry_id
@@ -377,4 +378,4 @@ class RestfulDatastoreController(base.BaseController):
             return self._parse_response(result, content_type, RECORDS)
 
         return self._execute_logic_function('datastore_search_sql', get_parameters, response_parser,
-                                            [utils.XML, utils.JSON, utils.CSV])
+                                            [utils.JSON, utils.XML, utils.CSV])
