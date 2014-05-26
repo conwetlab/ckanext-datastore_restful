@@ -25,3 +25,6 @@ You can also generate coverage reports by running:
 nosetests --ckan --with-pylons=test.ini --with-coverage --cover-package=ckanext.datastore_restful --cover-inclusive --cove
 ```
 
+API Specification
+-----------------
+[Acess the DataStore Restful API specification by clicking here.](https://github.com/conwetlab/ckanext-datastore_restful/wiki)
