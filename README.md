@@ -1,4 +1,4 @@
-CKAN DataStore Restful [![Build Status](http://hercules.ls.fi.upm.es/jenkins/job/ckan_datastore_restful/badge/icon)](http://hercules.ls.fi.upm.es/jenkins/job/ckan_datastore_restful)
+CKAN DataStore Restful [![Build Status](http://hercules.ls.fi.upm.es/jenkins/job/ckan_datastore_restful/badge/icon)](http://hercules.ls.fi.upm.es/jenkins/job/ckan_datastore_restful/)
 ======================
 
 CKAN is a powerful tool that allows users to publish data in different formats. In addition, CKAN offers extensions that transform this datasets into HTTP APIs to ease the access to them. Nevertheless, this API is not REST since it only uses GET and POST verbs. For this reason we have created this extenion that you can easily install in your CKAN instance. 
