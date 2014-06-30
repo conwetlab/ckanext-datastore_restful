@@ -22,7 +22,7 @@ nosetests --ckan --with-pylons=test.ini ckanext/datastore_restful/tests/
 
 You can also generate coverage reports by running:
 ```
-nosetests --ckan --with-pylons=test.ini --with-coverage --cover-package=ckanext.datastore_restful --cover-inclusive --cove
+nosetests --ckan --with-pylons=test.ini --with-coverage --cover-package=ckanext.datastore_restful --cover-inclusive --cover-erase . --cover-xml
 ```
 
 API Specification
