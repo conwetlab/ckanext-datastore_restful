@@ -5,7 +5,7 @@ CKAN is a powerful tool that allows users to publish data in different formats. 
 
 Installation
 ------------
-Install this extension in your CKAN is instance is as easy as intall any other CKAN extension.
+Install this extension in your CKAN instance is as easy as intall any other CKAN extension.
 * Download the source from this GitHub repo.
 * Install the extension by running `python setup.py develop`
 * Modify your configuration file (generally in `/etc/ckan/default/production.ini`) and add `datastore_restful` in the `ckan.plugins` setting.
